@@ -1,4 +1,0 @@
-l database tb3 project markethouse:
-mysql -h centerbeam.proxy.rlwy.net -P 38846 -u root -p
-password:
-JgpwisZZNxhLMCboKxKjxfIJeuVdahPQ
