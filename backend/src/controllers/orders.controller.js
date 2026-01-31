@@ -1,6 +1,15 @@
 const db = require("../config/db");
+function isAdmin(req) {
+  return req.user && req.user.role === "admin";
+}
 exports.getAll = async (req, res, next) => {
   try {
+    if (!isAdmin(req)) {
+      const e = new Error("Forbidden");
+      e.status = 403;
+      throw e;
+    }
+
     const { user_id, status } = req.query;
 
     let sql = `
@@ -31,9 +40,39 @@ exports.getAll = async (req, res, next) => {
     next(err);
   }
 };
+
+// CUSTOMER: my orders
+exports.myOrders = async (req, res, next) => {
+  try {
+    const userId = Number(req.user.id);
+
+    const [rows] = await db.promise().query(
+      `
+      SELECT 
+        o.id, o.total, o.status, o.created_at
+      FROM orders o
+      WHERE o.user_id = ?
+      ORDER BY o.id DESC
+      `,
+      [userId]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// CUSTOMER: get one order (only his) OR admin
 exports.getOne = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    const userId = Number(req.user.id);
+
+    // if not admin -> must own order
+    const where = isAdmin(req) ? "o.id = ?" : "o.id = ? AND o.user_id = ?";
+
+    const params = isAdmin(req) ? [id] : [id, userId];
 
     const [orders] = await db.promise().query(
       `
@@ -42,9 +81,9 @@ exports.getOne = async (req, res, next) => {
         o.total, o.status, o.created_at
       FROM orders o
       JOIN users u ON u.id = o.user_id
-      WHERE o.id = ?
+      WHERE ${where}
       `,
-      [id]
+      params
     );
 
     if (orders.length === 0) {
@@ -71,22 +110,20 @@ exports.getOne = async (req, res, next) => {
     next(err);
   }
 };
+
+// CUSTOMER: create order (uses req.user.id)
 exports.create = async (req, res, next) => {
   const conn = await db.promise().getConnection();
   try {
-    const { user_id, items } = req.body;
-
-    if (!user_id) {
-      const e = new Error("user_id is required");
-      e.status = 400;
-      throw e;
-    }
+    const userId = Number(req.user.id);
+    const { items } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
       const e = new Error("items must be a non-empty array");
       e.status = 400;
       throw e;
     }
+
     for (const it of items) {
       if (!it.product_id || !it.quantity || Number(it.quantity) <= 0) {
         const e = new Error("Each item must have product_id and quantity > 0");
@@ -96,23 +133,33 @@ exports.create = async (req, res, next) => {
     }
 
     await conn.beginTransaction();
+
+    // 1) create order
     const [orderResult] = await conn.query(
       "INSERT INTO orders (user_id, total, status) VALUES (?, 0, 'pending')",
-      [Number(user_id)]
+      [userId]
     );
+
     const orderId = orderResult.insertId;
-    const productIds = items.map((it) => Number(it.product_id));
+
+    // 2) get product prices
+    const productIds = [...new Set(items.map((it) => Number(it.product_id)))];
+
+    const placeholders = productIds.map(() => "?").join(",");
     const [products] = await conn.query(
-      `SELECT id, price, is_offer, offer_price FROM products WHERE id IN (${productIds
-        .map(() => "?")
-        .join(",")})`,
+      `SELECT id, price, is_offer, offer_price 
+       FROM products 
+       WHERE id IN (${placeholders})`,
       productIds
     );
+
     const priceMap = new Map();
     for (const p of products) {
       const finalPrice = p.is_offer ? Number(p.offer_price) : Number(p.price);
       priceMap.set(p.id, finalPrice);
     }
+
+    // validate all products exist
     for (const it of items) {
       if (!priceMap.has(Number(it.product_id))) {
         const e = new Error(`Product not found: ${it.product_id}`);
@@ -120,6 +167,8 @@ exports.create = async (req, res, next) => {
         throw e;
       }
     }
+
+    // 3) insert items + calculate total
     let total = 0;
 
     for (const it of items) {
@@ -135,6 +184,8 @@ exports.create = async (req, res, next) => {
         [orderId, pid, qty, price]
       );
     }
+
+    // 4) update total
     await conn.query("UPDATE orders SET total = ? WHERE id = ?", [
       total,
       orderId,
