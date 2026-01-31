@@ -1,5 +1,7 @@
 const db = require("../config/db");
-exports.getAll = async (req, res, next) => { //get all products
+
+// GET /api/products?category_id=1&offer=true&search=meat
+exports.getAll = async (req, res, next) => {
   try {
     const { category_id, offer, search } = req.query;
 
@@ -36,7 +38,9 @@ exports.getAll = async (req, res, next) => { //get all products
     next(err);
   }
 };
-exports.getOne = async (req, res, next) => { //get product by id
+
+// GET /api/products/:id
+exports.getOne = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
 
@@ -60,7 +64,9 @@ exports.getOne = async (req, res, next) => { //get product by id
     next(err);
   }
 };
-exports.create = async (req, res, next) => { //create new product
+
+// POST /api/products
+exports.create = async (req, res, next) => {
   try {
     const {
       name,
@@ -79,16 +85,17 @@ exports.create = async (req, res, next) => { //create new product
     }
 
     const numericPrice = Number(price);
-    if (!numericPrice || numericPrice <= 0) {
+    if (Number.isNaN(numericPrice) || numericPrice <= 0) {
       const e = new Error("Valid price is required");
       e.status = 400;
       throw e;
     }
 
     const offerBool = Boolean(is_offer);
-    const offerNumeric = offer_price !== null && offer_price !== "" ? Number(offer_price) : null;
+    const offerNumeric =
+      offer_price !== null && offer_price !== "" ? Number(offer_price) : null;
 
-    if (offerBool && (!offerNumeric || offerNumeric <= 0)) {
+    if (offerBool && (offerNumeric === null || Number.isNaN(offerNumeric) || offerNumeric <= 0)) {
       const e = new Error("offer_price is required when is_offer is true");
       e.status = 400;
       throw e;
