@@ -1,12 +1,18 @@
 const router = require("express").Router();
 const orders = require("../controllers/orders.controller");
 const auth = require("../middleware/auth.middleware");
-// customer: create order
+const adminOnly = require("../middleware/admin.middleware");
+
+//  (Admin) Get all orders + filters
+router.get("/", auth, adminOnly, orders.getAll);
+
+// (Admin) Get one order with items
+router.get("/:id", auth, adminOnly, orders.getOne);
+
+// (Customer) Create order
 router.post("/", auth, orders.create);
-// customer: my orders
-router.get("/my", auth, orders.myOrders);
-// customer: get one order (only if belongs to him) OR admin
-router.get("/:id", auth, orders.getOne);
-// admin: list all orders (optional)
-router.get("/", auth, orders.getAll);
+
+//  (Admin) Update order status
+router.patch("/:id/status", auth, adminOnly, orders.updateStatus);
+
 module.exports = router;

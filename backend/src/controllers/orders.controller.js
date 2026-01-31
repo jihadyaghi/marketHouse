@@ -1,15 +1,11 @@
 const db = require("../config/db");
-function isAdmin(req) {
-  return req.user && req.user.role === "admin";
-}
+
+// Allowed statuses for orders
+const ALLOWED_STATUSES = new Set(["pending", "confirmed", "delivered", "canceled"]);
+
+// GET /api/orders?user_id=&status=   (عادة للأدمن)
 exports.getAll = async (req, res, next) => {
   try {
-    if (!isAdmin(req)) {
-      const e = new Error("Forbidden");
-      e.status = 403;
-      throw e;
-    }
-
     const { user_id, status } = req.query;
 
     let sql = `
@@ -41,38 +37,10 @@ exports.getAll = async (req, res, next) => {
   }
 };
 
-// CUSTOMER: my orders
-exports.myOrders = async (req, res, next) => {
-  try {
-    const userId = Number(req.user.id);
-
-    const [rows] = await db.promise().query(
-      `
-      SELECT 
-        o.id, o.total, o.status, o.created_at
-      FROM orders o
-      WHERE o.user_id = ?
-      ORDER BY o.id DESC
-      `,
-      [userId]
-    );
-
-    res.json(rows);
-  } catch (err) {
-    next(err);
-  }
-};
-
-// CUSTOMER: get one order (only his) OR admin
+// GET /api/orders/:id   (عادة للأدمن)
 exports.getOne = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const userId = Number(req.user.id);
-
-    // if not admin -> must own order
-    const where = isAdmin(req) ? "o.id = ?" : "o.id = ? AND o.user_id = ?";
-
-    const params = isAdmin(req) ? [id] : [id, userId];
 
     const [orders] = await db.promise().query(
       `
@@ -81,9 +49,9 @@ exports.getOne = async (req, res, next) => {
         o.total, o.status, o.created_at
       FROM orders o
       JOIN users u ON u.id = o.user_id
-      WHERE ${where}
+      WHERE o.id = ?
       `,
-      params
+      [id]
     );
 
     if (orders.length === 0) {
@@ -111,12 +79,17 @@ exports.getOne = async (req, res, next) => {
   }
 };
 
-// CUSTOMER: create order (uses req.user.id)
+// POST /api/orders  (زبون/مستخدم)
 exports.create = async (req, res, next) => {
   const conn = await db.promise().getConnection();
   try {
-    const userId = Number(req.user.id);
-    const { items } = req.body;
+    const { user_id, items } = req.body;
+
+    if (!user_id) {
+      const e = new Error("user_id is required");
+      e.status = 400;
+      throw e;
+    }
 
     if (!Array.isArray(items) || items.length === 0) {
       const e = new Error("items must be a non-empty array");
@@ -134,22 +107,20 @@ exports.create = async (req, res, next) => {
 
     await conn.beginTransaction();
 
-    // 1) create order
+    // create order with total=0 first
     const [orderResult] = await conn.query(
       "INSERT INTO orders (user_id, total, status) VALUES (?, 0, 'pending')",
-      [userId]
+      [Number(user_id)]
     );
 
     const orderId = orderResult.insertId;
 
-    // 2) get product prices
-    const productIds = [...new Set(items.map((it) => Number(it.product_id)))];
-
+    // fetch products prices
+    const productIds = items.map((it) => Number(it.product_id));
     const placeholders = productIds.map(() => "?").join(",");
+
     const [products] = await conn.query(
-      `SELECT id, price, is_offer, offer_price 
-       FROM products 
-       WHERE id IN (${placeholders})`,
+      `SELECT id, price, is_offer, offer_price FROM products WHERE id IN (${placeholders})`,
       productIds
     );
 
@@ -168,9 +139,9 @@ exports.create = async (req, res, next) => {
       }
     }
 
-    // 3) insert items + calculate total
     let total = 0;
 
+    // insert items
     for (const it of items) {
       const pid = Number(it.product_id);
       const qty = Number(it.quantity);
@@ -185,11 +156,8 @@ exports.create = async (req, res, next) => {
       );
     }
 
-    // 4) update total
-    await conn.query("UPDATE orders SET total = ? WHERE id = ?", [
-      total,
-      orderId,
-    ]);
+    // update total
+    await conn.query("UPDATE orders SET total = ? WHERE id = ?", [total, orderId]);
 
     await conn.commit();
 
@@ -206,5 +174,46 @@ exports.create = async (req, res, next) => {
     next(err);
   } finally {
     conn.release();
+  }
+};
+
+// PATCH /api/orders/:id/status  (أدمن)
+exports.updateStatus = async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { status } = req.body;
+
+    if (!id) {
+      const e = new Error("Invalid order id");
+      e.status = 400;
+      throw e;
+    }
+
+    if (!status || !ALLOWED_STATUSES.has(status)) {
+      const e = new Error("Invalid status");
+      e.status = 400;
+      throw e;
+    }
+
+    // ensure order exists
+    const [exists] = await db.promise().query(
+      "SELECT id FROM orders WHERE id = ? LIMIT 1",
+      [id]
+    );
+
+    if (exists.length === 0) {
+      const e = new Error("Order not found");
+      e.status = 404;
+      throw e;
+    }
+
+    await db.promise().query("UPDATE orders SET status = ? WHERE id = ?", [
+      status,
+      id,
+    ]);
+
+    res.json({ message: "Status updated", id, status });
+  } catch (err) {
+    next(err);
   }
 };
